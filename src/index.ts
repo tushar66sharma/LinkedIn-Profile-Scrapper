@@ -55,11 +55,18 @@ app.get('/api/profile', async (req: Request, res: Response) => {
       data: cleanedData
     });
   } catch (error: any) {
-    console.error("API Error:", error.message);
-    const status = error.message.includes('authentication') ? 401 : (error.message.includes('not found') ? 404 : 500);
-    return res.status(status).json({
+    const msg: string = error.message || 'An unexpected error occurred.';
+    console.error('[API Error]', msg);
+
+    let httpStatus = 500;
+    if (msg.includes('authentication failed'))   httpStatus = 401;
+    else if (msg.includes('not found'))          httpStatus = 404;
+    else if (msg.includes('rate limit'))         httpStatus = 429;
+    else if (msg.includes('temporarily blocking')) httpStatus = 503;
+
+    return res.status(httpStatus).json({
       status: 'error',
-      message: error.message || 'An unexpected error occurred while fetching profile data.'
+      message: msg
     });
   }
 });
