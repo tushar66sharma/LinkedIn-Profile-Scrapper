@@ -13,16 +13,17 @@ This guide walks you through deploying the LinkedIn Profile Scraper API on [Rend
 
 ## Important: How the Scraper Works on Render
 
-When deployed on Render, the **3-tier pipeline** operates as follows:
+When deployed on Render, the **3-tier pipeline** operates differently than locally:
 
-| Tier | Method | Speed | Notes |
-|------|--------|-------|-------|
-| 1 | In-memory cache | Instant | Results cached 1 hour |
-| 2 | Voyager Dash API | ~2–3s | Requires `LI_AT` + `JSESSIONID` |
-| 3 | HTML/JSON-LD scrape | ~3–5s | Falls back if Tier 2 blocked |
-| 4 | Playwright stealth browser | ~20–30s first time | Uses `LINKEDIN_EMAIL` + `LINKEDIN_PASSWORD` |
+| Tier | Method | Works on Render Free? | Notes |
+|------|--------|-----------------------|-------|
+| 1 | In-memory cache | ✅ Yes | Instant, 0 LinkedIn calls |
+| 2 | Voyager Dash API | ✅ Yes (reliable) | Clean AWS IPs are not flagged by LinkedIn |
+| 3 | HTML/JSON-LD scrape | ✅ Yes | Falls back if Tier 2 blocked |
+| 4 | Playwright browser | ❌ No | 512 MB RAM too low for Chromium |
 
-On Render's servers, Tier 2 (direct API) is far more likely to work consistently since the IP is a fresh cloud IP that LinkedIn hasn't flagged. **Tier 4 (Playwright) requires special Dockerfile configuration** — see Step 4b below.
+> **Why no Playwright needed on Render?**
+> The reason Playwright is needed locally is that your **home/residential IP gets temporarily flagged** by LinkedIn after the first direct API call. Render runs on **clean AWS cloud IPs** that LinkedIn has never flagged — so the direct Voyager API works reliably from there. Playwright is a local development fallback only.
 
 ---
 
