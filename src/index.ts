@@ -6,6 +6,7 @@ import path from 'path';
 import { extractUsername } from './utils';
 import { fetchProfileData } from './scraper';
 import { mapVoyagerResponse } from './mapper';
+import { cacheGet, cacheSet } from './cache';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,15 +44,25 @@ app.get('/api/profile', async (req: Request, res: Response) => {
   }
 
   try {
-    // 1. Fetch raw data from Voyager API
+    // 1. Check cache first
+    const cached = cacheGet(username);
+    if (cached) {
+      return res.json({ status: 'success', cached: true, data: cached });
+    }
+
+    // 2. Fetch raw data from Voyager API (with HTML fallback)
     const rawData = await fetchProfileData(username);
-    
-    // 2. Map and clean the data
+
+    // 3. Map and clean the data
     const cleanedData = mapVoyagerResponse(rawData);
-    
-    // 3. Return structured JSON
+
+    // 4. Store in cache for 1 hour
+    cacheSet(username, cleanedData);
+
+    // 5. Return structured JSON
     return res.json({
       status: 'success',
+      cached: false,
       data: cleanedData
     });
   } catch (error: any) {

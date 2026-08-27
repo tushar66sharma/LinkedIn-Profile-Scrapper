@@ -28,6 +28,11 @@ export function mapVoyagerResponse(rawData: any): ProfileData {
   try {
     if (!rawData) return profile;
 
+    // ── JSON-LD fallback path (from HTML scrape) ────────────────────────
+    if (rawData.__source === 'jsonld') {
+      return mapFromJsonLd(rawData.jsonld, profile);
+    }
+
     // ── The Dash API returns data under rawData.elements[] ──────────────────
     const elements: any[] = rawData.elements || [];
     const coreProfile = elements[0];
@@ -154,4 +159,47 @@ function formatDateRange(dateRange: any): string | null {
   const start = dateRange.start?.year ? String(dateRange.start.year) : '';
   const end = dateRange.end?.year ? String(dateRange.end.year) : 'Present';
   return start ? `${start} – ${end}` : null;
+}
+
+// ── Map from JSON-LD data (HTML scraping fallback) ────────────────────────
+function mapFromJsonLd(jsonldBlocks: any[], profile: ProfileData): ProfileData {
+  // LinkedIn JSON-LD uses schema.org Person type
+  const person = jsonldBlocks.find((b: any) => b['@type'] === 'Person');
+  if (!person) return profile;
+
+  profile.name     = person.name || null;
+  profile.headline = person.jobTitle || null;
+  profile.location = person.address?.addressLocality || null;
+  profile.about    = person.description || null;
+
+  if (person.image?.contentUrl) {
+    profile.profileImage = person.image.contentUrl;
+  }
+
+  // Works for (organization roles)
+  if (Array.isArray(person.worksFor)) {
+    profile.experience = person.worksFor.map((w: any) => ({
+      title: w.employee?.roleName || null,
+      company: w.name || null,
+      description: null,
+      dateRange: null
+    }));
+  }
+
+  // alumniOf
+  if (Array.isArray(person.alumniOf)) {
+    profile.education = person.alumniOf.map((a: any) => ({
+      school: typeof a === 'string' ? a : (a.name || null),
+      degree: null,
+      fieldOfStudy: null,
+      dateRange: null
+    }));
+  }
+
+  // Skills (knowsAbout)
+  if (Array.isArray(person.knowsAbout)) {
+    profile.skills = person.knowsAbout.filter(Boolean);
+  }
+
+  return profile;
 }

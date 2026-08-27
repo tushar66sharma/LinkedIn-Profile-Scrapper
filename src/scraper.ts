@@ -1,3 +1,27 @@
+// ── Rotating User-Agent pool (real Chrome/Firefox strings) ────────────────
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+];
+
+function randomUA(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]!;
+}
+
+function randomDelay(minMs = 1500, maxMs = 4000): Promise<void> {
+  const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  console.log(`[Scraper] Waiting ${ms}ms before request (anti-bot delay)...`);
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randomId(): string {
+  return Math.random().toString(36).substring(2, 15);
+}
+
 export async function fetchProfileData(username: string): Promise<any> {
   const LI_AT    = process.env.LI_AT;
   const JSESSIONID = process.env.JSESSIONID;
@@ -6,18 +30,20 @@ export async function fetchProfileData(username: string): Promise<any> {
     throw new Error('Missing LinkedIn authentication cookies in environment variables.');
   }
 
-  // dotenv strips outer quotes, but guard against both cases
-  const liAt     = LI_AT.replace(/^"|"$/g, '');
-  const jsession = JSESSIONID.replace(/^"|"$/g, '');
-  const csrfToken = jsession; // JSESSIONID value IS the csrf token
+  const liAt      = LI_AT.replace(/^"|"$/g, '');
+  const jsession  = JSESSIONID.replace(/^"|"$/g, '');
+  const csrfToken = jsession;
+
+  // ── Random delay to mimic human browsing patterns ──────────────────────
+  await randomDelay();
 
   const headers: Record<string, string> = {
     // ── Auth ────────────────────────────────────────────────────────────────
     'Cookie': `li_at=${liAt}; JSESSIONID="${csrfToken}";`,
     'csrf-token': csrfToken,
 
-    // ── Browser Fingerprint ──────────────────────────────────────────────
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    // ── Rotated browser fingerprint ─────────────────────────────────────
+    'User-Agent': randomUA(),
     'Accept': 'application/vnd.linkedin.normalized+json+2.1',
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
@@ -51,59 +77,111 @@ export async function fetchProfileData(username: string): Promise<any> {
 
   const dashUrl = `https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=${username}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93`;
 
-  console.log(`[Scraper] Fetching profile: ${username}`);
+  console.log(`[Scraper] Fetching profile for: ${username}`);
 
-  const response = await fetchWithRetry(dashUrl, headers);
+  // ── Primary: Voyager Dash API ──────────────────────────────────────────
+  let response: Response;
+  try {
+    response = await fetchWithRetry(dashUrl, headers);
+  } catch (netErr: any) {
+    // ── Fallback: Scrape public HTML page and parse JSON-LD ───────────────
+    console.warn('[Scraper] Voyager API blocked. Attempting HTML/JSON-LD fallback...');
+    return await scrapePublicPage(username, liAt, csrfToken);
+  }
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error(`LinkedIn authentication failed (${response.status}). Your cookies may be expired. Please update LI_AT and JSESSIONID.`);
+      throw new Error(`LinkedIn authentication failed (${response.status}). Your cookies may be expired.`);
     }
     if (response.status === 404) {
-      throw new Error(`Profile '${username}' was not found on LinkedIn. The profile may be private or deleted.`);
+      throw new Error(`Profile '${username}' was not found. The profile may be private or deleted.`);
     }
     if (response.status === 429) {
-      throw new Error('LinkedIn rate limit hit. Please wait a few minutes before sending another request.');
+      throw new Error('LinkedIn rate limit hit. Please wait a few minutes before trying again.');
     }
-    if (response.status === 410) {
-      throw new Error('The LinkedIn API endpoint returned 410 Gone. The API may have changed — please report this issue.');
-    }
-    const body = await response.text();
-    console.error(`[Scraper] Unexpected response ${response.status}:`, body.slice(0, 300));
-    throw new Error(`LinkedIn API returned an unexpected status: ${response.status}`);
+    // On any other failure, try the public page fallback
+    console.warn(`[Scraper] API returned ${response.status}. Attempting HTML/JSON-LD fallback...`);
+    return await scrapePublicPage(username, liAt, csrfToken);
   }
 
   const data = await response.json();
-  console.log(`[Scraper] Successfully fetched data for: ${username}`);
+  console.log(`[Scraper] Successfully fetched via Voyager API for: ${username}`);
   return data;
 }
 
-// ── Fetch with retry (up to 2 retries on network failure) ─────────────────
+// ── Fallback: Scrape public profile page and extract JSON-LD ─────────────
+async function scrapePublicPage(username: string, liAt: string, csrfToken: string): Promise<any> {
+  const pageUrl = `https://www.linkedin.com/in/${username}/`;
+  console.log(`[Scraper] Fetching public HTML page: ${pageUrl}`);
+
+  const pageRes = await fetch(pageUrl, {
+    method: 'GET',
+    headers: {
+      'Cookie': `li_at=${liAt}; JSESSIONID="${csrfToken}";`,
+      'User-Agent': randomUA(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Upgrade-Insecure-Requests': '1',
+      'Connection': 'keep-alive',
+    }
+  });
+
+  if (!pageRes.ok) {
+    throw new Error(
+      `LinkedIn is temporarily blocking requests from this machine. ` +
+      `This is a short-term IP/session block — please wait 15–30 minutes and try again. ` +
+      `(HTML fallback also returned ${pageRes.status})`
+    );
+  }
+
+  const html = await pageRes.text();
+
+  // LinkedIn embeds structured data in <script type="application/ld+json"> tags
+  const jsonLdMatches = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g);
+
+  if (!jsonLdMatches || jsonLdMatches.length === 0) {
+    // Check if we were redirected to login
+    if (html.includes('authwall') || html.includes('login') || html.includes('sign-in')) {
+      throw new Error('LinkedIn redirected to login page. Cookies may be expired or the profile is private.');
+    }
+    throw new Error(
+      `LinkedIn is temporarily blocking requests from this machine. ` +
+      `Please wait 15–30 minutes and try again.`
+    );
+  }
+
+  // Parse all JSON-LD blocks and look for the Person schema
+  const jsonLdObjects: any[] = [];
+  for (const match of jsonLdMatches) {
+    try {
+      const json = JSON.parse(match.replace(/<script type="application\/ld\+json">/, '').replace(/<\/script>/, ''));
+      jsonLdObjects.push(json);
+    } catch { /* skip malformed blocks */ }
+  }
+
+  console.log(`[Scraper] HTML fallback succeeded for: ${username} (${jsonLdObjects.length} JSON-LD block(s) found)`);
+  // Return in a special wrapper so the mapper knows it's from JSON-LD
+  return { __source: 'jsonld', jsonld: jsonLdObjects };
+}
+
+// ── Fetch with retry ───────────────────────────────────────────────────────
 async function fetchWithRetry(url: string, headers: Record<string, string>, retries = 2): Promise<Response> {
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
-      const res = await fetch(url, { method: 'GET', headers });
-      return res;
+      return await fetch(url, { method: 'GET', headers });
     } catch (err: any) {
       if (attempt <= retries) {
-        console.warn(`[Scraper] Attempt ${attempt} failed (${err.message}). Retrying in ${attempt * 2}s...`);
-        await sleep(attempt * 2000);
+        const wait = attempt * 2000 + Math.floor(Math.random() * 1000);
+        console.warn(`[Scraper] Attempt ${attempt} failed (${err.message}). Retrying in ${wait}ms...`);
+        await new Promise(r => setTimeout(r, wait));
       } else {
-        throw new Error(
-          `LinkedIn is temporarily blocking requests from this machine. ` +
-          `This is a temporary IP/session block, not a code error. ` +
-          `Please wait 15–30 minutes and try again. (${err.message})`
-        );
+        throw err;
       }
     }
   }
   throw new Error('Unreachable');
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function randomId(): string {
-  return Math.random().toString(36).substring(2, 15);
 }
