@@ -89,10 +89,10 @@ export async function fetchProfileData(username: string): Promise<any> {
     try {
       return await scrapePublicPage(username, liAt, csrfToken);
     } catch {
-      // ── Fallback 2: Playwright Stealth (real browser) ─────────────────
-      console.warn('[Scraper] HTML fetch also blocked. Launching stealth browser...');
+      // ── Fallback 2: Playwright with persistent login session ──────────
+      console.warn('[Scraper] HTML fetch also blocked. Using stealth browser with persistent session...');
       const { stealthFetchProfile } = await import('./stealthScraper');
-      return await stealthFetchProfile(username, liAt, csrfToken);
+      return await stealthFetchProfile(username);
     }
   }
 
