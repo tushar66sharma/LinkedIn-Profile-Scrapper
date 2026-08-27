@@ -84,9 +84,16 @@ export async function fetchProfileData(username: string): Promise<any> {
   try {
     response = await fetchWithRetry(dashUrl, headers);
   } catch (netErr: any) {
-    // ── Fallback: Scrape public HTML page and parse JSON-LD ───────────────
-    console.warn('[Scraper] Voyager API blocked. Attempting HTML/JSON-LD fallback...');
-    return await scrapePublicPage(username, liAt, csrfToken);
+    // ── Fallback 1: Scrape public HTML page ───────────────────────────────
+    console.warn('[Scraper] Voyager API blocked by network. Trying HTML fallback...');
+    try {
+      return await scrapePublicPage(username, liAt, csrfToken);
+    } catch {
+      // ── Fallback 2: Playwright Stealth (real browser) ─────────────────
+      console.warn('[Scraper] HTML fetch also blocked. Launching stealth browser...');
+      const { stealthFetchProfile } = await import('./stealthScraper');
+      return await stealthFetchProfile(username, liAt, csrfToken);
+    }
   }
 
   if (!response.ok) {
