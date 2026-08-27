@@ -5,9 +5,24 @@ This guide walks you through deploying the LinkedIn Profile Scraper API on [Rend
 ---
 
 ## Prerequisites
-- ✅ Phase 5 merged into `main` on GitHub.
-- ✅ A GitHub account with the repository pushed.
-- ✅ Your `LI_AT` and `JSESSIONID` cookie values ready.
+- ✅ All phase branches merged into `main` on GitHub.
+- ✅ Your LinkedIn account **email and password** ready.
+- ✅ (Optional) Your `LI_AT` and `JSESSIONID` cookies.
+
+---
+
+## Important: How the Scraper Works on Render
+
+When deployed on Render, the **3-tier pipeline** operates as follows:
+
+| Tier | Method | Speed | Notes |
+|------|--------|-------|-------|
+| 1 | In-memory cache | Instant | Results cached 1 hour |
+| 2 | Voyager Dash API | ~2–3s | Requires `LI_AT` + `JSESSIONID` |
+| 3 | HTML/JSON-LD scrape | ~3–5s | Falls back if Tier 2 blocked |
+| 4 | Playwright stealth browser | ~20–30s first time | Uses `LINKEDIN_EMAIL` + `LINKEDIN_PASSWORD` |
+
+On Render's servers, Tier 2 (direct API) is far more likely to work consistently since the IP is a fresh cloud IP that LinkedIn hasn't flagged. **Tier 4 (Playwright) requires special Dockerfile configuration** — see Step 4b below.
 
 ---
 
@@ -15,126 +30,151 @@ This guide walks you through deploying the LinkedIn Profile Scraper API on [Rend
 
 1. Go to [https://render.com](https://render.com).
 2. Click **Get Started for Free**.
-3. Sign up using your **GitHub** account (recommended — it makes connecting repos easier).
+3. Sign up using your **GitHub** account.
 4. Authorize Render to access your GitHub repositories.
 
 ---
 
 ## Step 2: Create a New Web Service
 
-1. Once logged in, you will land on the **Dashboard**.
-2. Click the **New +** button in the top-right corner.
-3. From the dropdown, select **Web Service**.
-
-![Render Dashboard New Service](https://render.com/static/dashboard-screenshot.png)
+1. From the Render **Dashboard**, click **New +** → **Web Service**.
+2. Click **Connect account** under GitHub if not already connected.
+3. Search for **LinkedIn-Profile-Scrapper** and click **Connect**.
 
 ---
 
-## Step 3: Connect Your GitHub Repository
+## Step 3: Configure the Web Service
 
-1. Render will ask you to connect a Git repository.
-2. Click **Connect account** under GitHub (if not already connected).
-3. You will see a list of your repositories. Search for **LinkedIn-Profile-Scrapper**.
-4. Click **Connect** next to it.
+Fill in the configuration form exactly as follows:
 
----
+| Field             | Value                            |
+|-------------------|----------------------------------|
+| **Name**          | `linkedin-profile-scraper`       |
+| **Region**        | Choose closest to you            |
+| **Branch**        | `main`                           |
+| **Runtime**       | `Docker`                         |
+| **Instance Type** | `Free`                           |
 
-## Step 4: Configure the Web Service
-
-After connecting the repo, Render will show a configuration form. Fill in these fields **exactly**:
-
-| Field              | Value                                      |
-|--------------------|--------------------------------------------|
-| **Name**           | `linkedin-profile-scraper` (or any name)   |
-| **Region**         | Choose the region closest to you           |
-| **Branch**         | `main`                                     |
-| **Runtime**        | `Docker`                                   |
-| **Instance Type**  | `Free`                                     |
-
-> ✅ Since we have a `Dockerfile` in the root of our repo, Render will **automatically detect** it and select `Docker` as the runtime. You do not need to change anything in the build/start commands.
+> ✅ Render auto-detects the `Dockerfile` in the root of the repo.
 
 ---
 
-## Step 5: Add Environment Variables (Your Cookies)
+## Step 4: Update Dockerfile for Playwright
 
-This is the most critical step. Scroll down to the **Environment Variables** section.
+Since we use Playwright Chromium as the fallback scraper, the Dockerfile needs to install the browser. Update it as follows before deploying:
 
-Click **Add Environment Variable** and add the following **two variables**:
+<br>
 
-### Variable 1
-| Key    | Value                                |
-|--------|--------------------------------------|
-| `LI_AT` | *(paste your full `li_at` cookie value here)* |
+**Option A: If you only want Tiers 1–3 (no Playwright)**
 
-### Variable 2
-| Key          | Value                                       |
-|--------------|---------------------------------------------|
-| `JSESSIONID` | *(paste your full `JSESSIONID` cookie value here)* |
+Keep the existing `Dockerfile` as-is. This is lightweight but Playwright won't be available.
 
-> ⚠️ **Important:** Do NOT include the surrounding double quotes `"` when pasting the values into Render. Render stores the raw value, not the quoted string.
->
-> For example:
-> - ❌ Wrong: `"ajax:6183083160461541381"`
-> - ✅ Correct: `ajax:6183083160461541381`
+**Option B: Full Playwright support (recommended)**
+
+The `Dockerfile` should install Chromium system dependencies. Update it to:
+
+```dockerfile
+# Stage 1: Build
+FROM node:20-slim AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# Stage 2: Production with Playwright dependencies
+FROM node:20-slim AS production
+WORKDIR /app
+
+# Install Playwright system dependencies
+RUN apt-get update && apt-get install -y \
+    libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libatspi2.0-0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 \
+    libcairo2 libasound2 libxshmfence1 \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Install Playwright Chromium browser
+RUN npx playwright install chromium
+
+COPY --from=builder /app/dist ./dist
+
+EXPOSE 3000
+CMD ["node", "dist/index.js"]
+```
+
+---
+
+## Step 5: Add Environment Variables
+
+Scroll to the **Environment Variables** section. Add all of the following:
+
+### Required (for stable Playwright auto-login):
+
+| Key                  | Value                                           |
+|----------------------|-------------------------------------------------|
+| `LINKEDIN_EMAIL`     | Your LinkedIn account email address             |
+| `LINKEDIN_PASSWORD`  | Your LinkedIn account password                  |
+
+### Optional (for faster Tier 2 Voyager API path):
+
+| Key          | Value                                |
+|--------------|--------------------------------------|
+| `LI_AT`      | Your `li_at` cookie value (no quotes)|
+| `JSESSIONID` | Your `JSESSIONID` value (no quotes)  |
+
+> ⚠️ **Do NOT include surrounding double quotes** when pasting into Render's dashboard.
 
 ---
 
 ## Step 6: Deploy
 
-1. After filling everything in, scroll to the bottom and click **Create Web Service**.
-2. Render will now:
-   - Pull your code from GitHub.
-   - Build the Docker image using your `Dockerfile`.
-   - Deploy the container.
-3. You will see a live build log. Wait for it to finish. It typically takes **2–4 minutes** for the first build.
-4. Once complete, you will see a status badge change to **Live** ✅.
+1. Click **Create Web Service**.
+2. Render pulls your code, builds the Docker image, and deploys.
+3. First build takes **3–5 minutes** (longer with Playwright deps).
+4. Watch the build log — look for `Server is running on port 3000`.
 
 ---
 
 ## Step 7: Get Your Public HTTPS URL
 
-1. At the top of your Render service page, you will see a URL like:
-   ```
-   https://linkedin-profile-scraper.onrender.com
-   ```
-2. Click on it — you should see the health check response:
-   ```json
-   {
-     "status": "success",
-     "message": "LinkedIn Profile Scraper API is running!"
-   }
-   ```
+Once deployed, you will see a URL like:
+```
+https://linkedin-profile-scraper.onrender.com
+```
 
----
-
-## Step 8: Test Your Live API
-
-Open your browser or use any API client (like Postman or Insomnia) and send this request:
-
+Test it:
 ```
 GET https://linkedin-profile-scraper.onrender.com/api/profile?url=https://www.linkedin.com/in/williamhgates
 ```
 
-You should receive a structured JSON response with Bill Gates' profile data.
+---
+
+## Step 8: First-Request Behavior
+
+The **first request** after a fresh deploy will trigger the Playwright login flow:
+- Takes ~20–30 seconds
+- LinkedIn login page is loaded in the headless browser
+- Credentials are filled in automatically
+- Session is saved to `.linkedin_session.json` in the container
+
+All subsequent requests will reuse the saved session and respond in 2–5 seconds.
+
+> ⚠️ **Note:** On Render's free tier, the container restarts periodically. Each restart clears the saved session file, triggering a re-login on the next request. This is normal behavior.
 
 ---
 
-## Step 9: Auto-Deploy on Future Pushes (Optional but Recommended)
+## Updating Credentials (When Needed)
 
-By default, Render automatically re-deploys your service every time you push a new commit to the `main` branch. You do not need to do anything extra for this — it is already enabled.
+If your LinkedIn password changes or the account gets locked:
 
----
-
-## Updating Your Cookies (When They Expire)
-
-When the `li_at` cookie expires (after several months), your API will start returning `401` errors. Here is how to fix it:
-
-1. Log into [linkedin.com](https://linkedin.com) in your browser.
-2. Open DevTools (`F12`) → **Application** → **Cookies** → `www.linkedin.com`.
-3. Copy the new values of `li_at` and `JSESSIONID`.
-4. Go to your Render service → **Environment** tab.
-5. Update the `LI_AT` and `JSESSIONID` values.
-6. Click **Save Changes** — Render will automatically redeploy with the new cookies.
+1. Go to your Render service → **Environment** tab.
+2. Update `LINKEDIN_EMAIL` and/or `LINKEDIN_PASSWORD`.
+3. Click **Save Changes** — Render automatically redeploys.
 
 ---
 
@@ -142,12 +182,13 @@ When the `li_at` cookie expires (after several months), your API will start retu
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| Build fails | Docker error | Check the Render build logs for the exact error |
-| API returns `401` | Cookies expired or wrong | Re-copy your cookies from the browser and update env vars |
-| API returns `404` for a profile | Profile is private or doesn't exist | Try with a different public profile URL |
-| Service goes to sleep | Free tier spins down after 15 min idle | Upgrade to a paid tier or use a cron job to ping it |
+| Build fails | Playwright deps missing | Use the Option B Dockerfile |
+| `CAPTCHA / checkpoint` error | LinkedIn flagged the account | Log in manually from your browser once to clear it |
+| Service goes to sleep | Free tier idles after 15 min | First request after sleep takes ~30s to wake + login |
+| `401 authentication failed` | Credentials wrong | Verify email/password in Render env vars |
+| Profile not found | Private profile | Try with a different public profile URL |
 
-> 💡 **Note on Free Tier Sleep:** Render's free tier spins down a service after 15 minutes of inactivity. The next request after sleep will take ~30 seconds to respond as it wakes up. For always-on availability, consider upgrading to a paid tier ($7/month).
+> 💡 **Tip on Free Tier Sleep:** Render's free tier sleeps after 15 minutes of inactivity. The next request wakes it up (~30s). For always-on service, upgrade to a paid tier ($7/month).
 
 ---
 
@@ -157,8 +198,8 @@ When the `li_at` cookie expires (after several months), your API will start retu
 |------|--------|
 | 1 | Sign up on Render with GitHub |
 | 2 | Create a New Web Service |
-| 3 | Connect the `LinkedIn-Profile-Scrapper` GitHub repo |
-| 4 | Set Runtime to `Docker`, Branch to `main` |
-| 5 | Add `LI_AT` and `JSESSIONID` as Environment Variables |
-| 6 | Click Deploy and wait for the build |
-| 7 | Copy your public HTTPS URL and test it |
+| 3 | Connect `LinkedIn-Profile-Scrapper` repo, set Runtime = Docker |
+| 4 | Update Dockerfile for Playwright (Option B) |
+| 5 | Add `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD` (and optionally `LI_AT`, `JSESSIONID`) as env vars |
+| 6 | Deploy and wait for build |
+| 7 | Copy your HTTPS URL and test |
