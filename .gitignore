@@ -1,3 +1,4 @@
 node_modules/
 .env
 research/sample_response.json
+dist/
