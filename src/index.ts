@@ -1,6 +1,7 @@
 import 'dotenv/config'; // Make sure to load env vars first
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import { extractUsername } from './utils';
 import { fetchProfileData } from './scraper';
 import { mapVoyagerResponse } from './mapper';
@@ -8,9 +9,20 @@ import { mapVoyagerResponse } from './mapper';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Rate Limiter Setup (Max 30 requests per 15 minutes per IP)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, 
+  max: 30, 
+  message: {
+    status: 'error',
+    message: 'Too many requests from this IP, please try again after 15 minutes.'
+  }
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(limiter);
 
 // Health Check Endpoint
 app.get('/', (req: Request, res: Response) => {
