@@ -24,6 +24,9 @@
    ============================================================ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Ensure HTML hidden attribute is always respected */
+[hidden] { display: none !important; }
+
 html { scroll-behavior: smooth; }
 
 body {
