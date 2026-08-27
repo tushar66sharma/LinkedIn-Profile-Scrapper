@@ -79,9 +79,12 @@ async function loginAndSaveSession(): Promise<BrowserContext> {
 
   console.log('[Session] Navigating to LinkedIn login page...');
   await page.goto('https://www.linkedin.com/login', {
-    waitUntil: 'networkidle',
+    waitUntil: 'domcontentloaded',  // 'networkidle' never fires — LinkedIn has continuous background polling
     timeout: 45000,
   });
+
+  // Give JS time to hydrate the React form after DOM load
+  await page.waitForTimeout(2000);
 
   // Dismiss cookie consent banner if it appears (EU/India region)
   try {
@@ -237,9 +240,15 @@ export async function stealthFetchProfile(username: string): Promise<any> {
   console.log(`[Stealth] Navigating to profile: ${username}`);
   try {
     await page.goto(`https://www.linkedin.com/in/${username}/`, {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded', // 'networkidle' never fires on LinkedIn
       timeout: 35000,
     });
+    // Wait up to 10s for either the Voyager API to be intercepted or main content to appear
+    await Promise.race([
+      page.waitForFunction(() => (window as any).__interceptDone === true, { timeout: 10000 }).catch(() => {}),
+      page.waitForSelector('main, .scaffold-layout__main, section.artdeco-card', { timeout: 10000 }).catch(() => {}),
+      page.waitForTimeout(10000),
+    ]);
   } catch {
     console.warn('[Stealth] Page load timeout — checking for intercepted data...');
   }
