@@ -2,6 +2,7 @@ import 'dotenv/config'; // Make sure to load env vars first
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
 import { extractUsername } from './utils';
 import { fetchProfileData } from './scraper';
 import { mapVoyagerResponse } from './mapper';
@@ -24,13 +25,8 @@ app.use(cors());
 app.use(express.json());
 app.use(limiter);
 
-// Health Check Endpoint
-app.get('/', (req: Request, res: Response) => {
-  res.json({
-    status: 'success',
-    message: 'LinkedIn Profile Scraper API is running!',
-  });
-});
+// Serve static frontend files from /public
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Profile Scraping Endpoint
 app.get('/api/profile', async (req: Request, res: Response) => {
