@@ -78,33 +78,91 @@ async function loginAndSaveSession(): Promise<BrowserContext> {
   await applyStealthPatches(page);
 
   console.log('[Session] Navigating to LinkedIn login page...');
-  await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
+  await page.goto('https://www.linkedin.com/login', {
+    waitUntil: 'networkidle',
+    timeout: 45000,
+  });
 
-  // Fill in credentials
-  await page.fill('#username', email);
-  await page.fill('#password', password);
-
-  // Random delay before clicking sign in (mimics human typing pause)
-  await page.waitForTimeout(800 + Math.random() * 700);
-
-  await page.click('[data-litms-control-urn="login-submit"]');
-
-  // Wait for redirect to the feed (successful login)
+  // Dismiss cookie consent banner if it appears (EU/India region)
   try {
-    await page.waitForURL('**/feed/**', { timeout: 20000 });
+    const cookieBtn = page.locator('button[action-type="ACCEPT"]').first();
+    await cookieBtn.waitFor({ timeout: 3000 });
+    await cookieBtn.click();
+    console.log('[Session] Dismissed cookie consent banner.');
+    await page.waitForTimeout(500);
+  } catch { /* no cookie banner — that's fine */ }
+
+  // Try multiple selector patterns LinkedIn uses across regions/A-B tests
+  const emailSelectors = ['#username', 'input[name="session_key"]', 'input[autocomplete="username"]'];
+  let emailFilled = false;
+  for (const sel of emailSelectors) {
+    try {
+      await page.waitForSelector(sel, { timeout: 8000 });
+      // Type like a human — character by character with small delays
+      await page.click(sel);
+      await page.type(sel, email, { delay: 60 + Math.random() * 60 });
+      emailFilled = true;
+      console.log(`[Session] Filled email using selector: ${sel}`);
+      break;
+    } catch { /* try next */ }
+  }
+
+  if (!emailFilled) {
+    // Save a debug screenshot so we can see what page loaded
+    await page.screenshot({ path: 'research/login_debug.png', fullPage: true });
+    await page.close(); await ctx.close();
+    throw new Error(
+      'Could not find the LinkedIn email input field. A debug screenshot was saved to research/login_debug.png. ' +
+      'LinkedIn may be showing a CAPTCHA or checkpoint — please log in manually from your browser once to clear it.'
+    );
+  }
+
+  // Fill password
+  const passSelectors = ['#password', 'input[name="session_password"]', 'input[type="password"]'];
+  for (const sel of passSelectors) {
+    try {
+      await page.waitForSelector(sel, { timeout: 5000 });
+      await page.click(sel);
+      await page.type(sel, password, { delay: 50 + Math.random() * 70 });
+      break;
+    } catch { /* try next */ }
+  }
+
+  // Human-like pause before submit
+  await page.waitForTimeout(1000 + Math.random() * 800);
+
+  // Click the sign-in button
+  const submitSelectors = [
+    '[data-litms-control-urn="login-submit"]',
+    'button[type="submit"]',
+    '.login__form_action_container button',
+  ];
+  for (const sel of submitSelectors) {
+    try {
+      await page.click(sel, { timeout: 5000 });
+      break;
+    } catch { /* try next */ }
+  }
+
+  // Wait for feed — confirms successful login
+  try {
+    await page.waitForURL('**/feed/**', { timeout: 25000 });
     console.log('[Session] ✅ Login successful!');
   } catch {
-    // Check if it's a checkpoint / CAPTCHA page
     const url = page.url();
+    await page.screenshot({ path: 'research/login_debug.png', fullPage: true });
+    await page.close(); await ctx.close();
     if (url.includes('checkpoint') || url.includes('challenge')) {
-      await page.close();
-      await ctx.close();
       throw new Error(
         'LinkedIn is showing a security checkpoint/CAPTCHA. ' +
-        'Please log in manually in a browser once to clear it, then try again.'
+        'Please log in manually in your browser once to clear it, then restart the server. ' +
+        'A debug screenshot was saved to research/login_debug.png'
       );
     }
-    throw new Error(`Login failed — redirected to: ${url}`);
+    throw new Error(
+      `Login failed — unexpected redirect to: ${url}. ` +
+      `Check research/login_debug.png for a screenshot of the current page.`
+    );
   }
 
   // Save the full browser state (cookies + localStorage) to a file
